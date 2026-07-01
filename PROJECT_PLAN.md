@@ -4,7 +4,7 @@
 데이터 엔지니어 이직/지원을 위한 포트폴리오 프로젝트. 아래 채용공고 3건의 요구사항을 하나의 엔드투엔드 파이프라인으로 커버하는 것이 목표.
 
 최종 산출물:
-- **GitHub**: 전체 코드 + 아키텍처 문서
+- **GitHub**: 전체 코드 + 아키텍처 문서 → https://github.com/donghajang213/ecommerce-cdc-pipeline
 - **Tistory 블로그**: 개발 과정/설계 의사결정/트러블슈팅 회고를 시리즈로 포스팅
 
 ## 타겟 채용공고 요약
@@ -152,3 +152,4 @@ Airflow DAG(`shop_pipeline`, 5분 주기)를 수동 트리거해서 end-to-end �
 - 2026-07-01: 1단계 완료 — Postgres/Debezium/Kafka/lake-writer/fake-gcs-server 전체 스택이 docker compose로 기동되고, CDC 이벤트가 실제로 데이터레이크에 JSONL로 적재되는 것까지 검증함. 다음 단계는 Airflow + dbt + BigQuery(로컬 에뮬레이션) 배치 파이프라인 구축.
 - 2026-07-01: 2단계 스캐폴딩 착수 — DuckDB(웨어하우스)+Airflow(LocalExecutor)+dbt(staging/marts) 구성 결정 및 파일 작성 완료. 다음은 실제 기동/검증.
 - 2026-07-01: 2단계 완료 — Airflow DAG가 GCS raw 파일을 DuckDB에 적재하고 dbt로 staging/mart까지 빌드하는 것을 실제로 검증함(일별 매출/상품별 판매/재구매 고객 마트 데이터 확인). 다음 단계는 3단계(데이터 품질 체크 + 지연 모니터링) 또는 4단계(BI 대시보드) 중 선택 필요.
+- 2026-07-01: GitHub 리포지토리 생성 및 최초 push 완료 (https://github.com/donghajang213/ecommerce-cdc-pipeline, public). gh CLI 설치 + 디바이스 로그인으로 인증.
