@@ -1,0 +1,7 @@
+shop_analytics:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: "{{ env_var('DUCKDB_PATH', '/opt/airflow/warehouse/shop.duckdb') }}"
+      threads: 4

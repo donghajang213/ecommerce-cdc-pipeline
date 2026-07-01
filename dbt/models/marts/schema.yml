@@ -1,0 +1,17 @@
+version: 2
+
+models:
+  - name: fct_daily_sales
+    columns:
+      - name: order_date
+        tests: [unique, not_null]
+
+  - name: fct_product_sales
+    columns:
+      - name: product_id
+        tests: [unique, not_null]
+
+  - name: mart_user_purchase_summary
+    columns:
+      - name: user_id
+        tests: [unique, not_null]

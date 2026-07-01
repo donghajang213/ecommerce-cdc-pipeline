@@ -1,0 +1,15 @@
+version: 2
+
+sources:
+  - name: raw
+    schema: main
+    description: >
+      Airflow DAG가 fake-gcs-server(raw/<table>/dt=.../*.jsonl)에서 읽어 DuckDB에 그대로
+      적재한 CDC 이벤트 원본 테이블. 각 행은 하나의 변경 이벤트(insert/update)이며,
+      같은 기본키(PK)에 대해 여러 버전이 쌓일 수 있다 (__ts_ms 순서로 최신 상태 판단).
+    tables:
+      - name: users_raw
+      - name: products_raw
+      - name: inventory_raw
+      - name: orders_raw
+      - name: order_items_raw

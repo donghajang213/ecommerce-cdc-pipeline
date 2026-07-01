@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+
+# dbt
+dbt/target/
+dbt/logs/
+dbt_packages/
+dbt/.user.yml
+
+# DuckDB / local data
+*.duckdb
+*.duckdb.wal
+
+# OS
+.DS_Store
+Thumbs.db
