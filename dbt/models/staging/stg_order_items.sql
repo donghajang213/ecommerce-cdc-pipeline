@@ -8,4 +8,4 @@ select
     created_at
 from {{ source('raw', 'order_items_raw') }}
 where not __deleted
-qualify row_number() over (partition by order_item_id order by __ts_ms desc) = 1
+qualify row_number() over (partition by order_item_id order by __ts_ms desc, __seq desc) = 1

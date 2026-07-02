@@ -146,6 +146,58 @@ Airflow DAG(`shop_pipeline`, 5분 주기)를 수동 트리거해서 end-to-end �
 - **DuckDB `Conversion Error: DOUBLE -> TIMESTAMP`**: Debezium의 마이크로초 타임스탬프를 초 단위 float로만 변환하고 DuckDB에 그대로 넣으려다 실패. `datetime.fromtimestamp(..., tz=utc)`로 실제 datetime 객체를 만들어 넣도록 수정.
 - **dbt 스키마 이름이 예상과 다름**: `+schema: marts`로 설정해도 실제 생성되는 스키마는 `main_marts`(디폴트 스키마 + 커스텀 스키마 접두 규칙, dbt 기본 동작). 쿼리할 때 이 규칙을 알아야 헷갈리지 않음.
 
+## 3단계 상세 설계 (데이터 품질 + 지연 모니터링)
+
+**정합성 검증**은 원래 계획에 있던 Great Expectations 대신 dbt 테스트로 구현하기로 결정. 이미 dbt가 파이프라인에 완전히 붙어 있어서 추가 인프라(GE checkpoint/docs 등) 없이도 "정합성 검증" 요건을 충분히 보여줄 수 있고, 실무에서도 dbt test가 널리 쓰이는 방식이기 때문. (PROJECT_PLAN.md 초안의 "Great Expectations 등"의 "등"에 해당하는 대체재로 기록)
+
+```
+dbt/models/staging/schema.yml   relationships 테스트 추가
+  - stg_orders.user_id -> stg_users.user_id
+  - stg_order_items.order_id -> stg_orders.order_id
+  - stg_order_items.product_id -> stg_products.product_id
+dbt/tests/assert_order_total_matches_items.sql   싱글턴 테스트: orders.total_amount == sum(order_items)
+dbt/dbt_project.yml   tests.+store_failures: true (실패 행을 main_dq 스키마에 저장 -> 4단계 BI 대시보드 소재)
+```
+
+**지연(latency) 모니터링**: `ingest_lib.py`가 GCS raw 파일을 DuckDB에 적재하면서, CDC 이벤트 발생 시각(Debezium `ts_ms`)과 실제 적재 시각(배치 시작 시각)의 차이를 계산해 `pipeline_latency_log`(테이블별 event_count/avg/max/p95 latency)에 남긴다.
+
+**알림 게이트**: DAG 마지막에 `data_quality_gate` 태스크(`dq_lib.py`)를 추가해 (1) latency SLA(=DAG 주기 5분의 2배인 600초) 초과 여부, (2) 직전 `dbt test` 결과(run_results.json)를 검사하고 `dq_check_log`에 기록. 하나라도 위반이면 `AirflowException`을 던져 Airflow UI에 태스크 실패로 노출한다(=알림. 실제 운영이라면 이 예외를 Slack/이메일 콜백에 연결). `dbt_build`이 실패해도 `data_quality_gate`는 `trigger_rule=all_done`으로 항상 실행되어 기록이 끊기지 않는다.
+
+### 트러블슈팅 기록 (3단계)
+- **동일 밀리초에 커밋된 CDC 이벤트의 순서 뒤바뀜**: `generator`가 `conn.autocommit = True`로 각 SQL문을 별도 트랜잭션으로 커밋하는데, 주문 생성 직후 총액 UPDATE가 같은 밀리초 안에 일어나면 Debezium `ts_ms`가 동률이 된다. staging 뷰가 `qualify row_number() over (... order by __ts_ms desc)`로 "최신 상태"를 고르다 보니 동률일 때 어느 행이 뽑힐지 보장되지 않아 `orders.total_amount=0`(생성 직후 초기값)인 옛 행이 뽑히는 경우가 실제로 발생함 (`assert_order_total_matches_items` 테스트가 실제로 이 문제를 잡아냄). DuckDB `CREATE SEQUENCE event_seq`로 적재 순서를 보장하는 `__seq` 컬럼을 추가하고, staging 뷰의 정렬 기준을 `order by __ts_ms desc, __seq desc`로 바꿔서 해결. 스키마 변경이라 기존 DuckDB 웨어하우스 파일은 삭제 후 GCS raw 데이터로부터 전 구간 재적재함(raw 데이터 자체는 GCS에 그대로 남아있어 재적재로 복구 가능).
+- **`order_items`가 부모 `orders`보다 먼저 도착하는 배치 경계 이슈**: `orders`와 `order_items`는 별도 Kafka 토픽이고 lake-writer가 토픽별로 독립적인 타이밍에 GCS 파일을 flush하기 때문에, 배치 타이밍에 따라 order_items 스냅샷은 반영됐는데 부모 orders 스냅샷은 아직 안 잡힌 상태로 배치가 실행될 수 있음. `relationships` 테스트가 이를 실제로 감지(FAIL 6건)했고, 다음 배치에서 자연 해소됨을 확인함 — CDC 파이프라인에서 흔한 "이기종 스트림 간 일시적 정합성 지연"의 실제 사례.
+
+## 3단계 검증 결과 (완료)
+`docker compose up`으로 스택 기동 후 `shop_pipeline` DAG를 여러 차례 수동 트리거해서 검증:
+- `pipeline_latency_log`에 배치별 latency(avg/max/p95, 초 단위)가 정상 기록됨.
+- `data_quality_gate`가 latency SLA와 dbt test 결과를 판단해 `dq_check_log`에 기록, 위반 시 태스크를 실제로 실패시킴을 확인(위 트러블슈팅의 두 실제 사례에서 검증됨).
+- 버그 수정(`__seq` 도입) 후 연속 2회 DAG 실행이 모두 success로 안정화됨을 확인.
+
+## 4단계 상세 설계 (BI 대시보드)
+
+Looker Studio는 클라우드 전용 서비스라 로컬 DuckDB 파일에 직접 연결할 수 없다. 1~3단계처럼
+전부 로컬 에뮬레이션으로 처리할 수는 없어서, "1~3단계는 `docker compose up`만으로 완전
+재현, 4단계만 실제 Google 클라우드(Sheets+Looker Studio) 연동"으로 범위를 나눴다.
+
+```
+DuckDB(main_marts.*) --export_marts_to_csv(Airflow)--> bi/exports/*.csv
+   --(수동 업로드, 1회/필요시)--> Google Sheets --(Sheets 커넥터)--> Looker Studio
+```
+
+- `airflow/dags/export_lib.py`: 마트 3개 테이블(fct_daily_sales, fct_product_sales,
+  mart_user_purchase_summary)을 `bi/exports/*.csv`로 내보내는 함수.
+- DAG에 `export_marts_to_csv` 태스크 추가 (`dbt_build` 다음, `data_quality_gate` 이전).
+- `docker-compose.yml`의 airflow-webserver/scheduler에 `./bi/exports:/opt/airflow/exports`
+  볼륨 마운트 추가 → 호스트에서 CSV를 바로 Google Sheets에 업로드 가능.
+- Google Sheets 업로드 + Looker Studio 데이터 소스 연결 + 차트 구성은 사용자가 수동으로
+  진행 (Sheets API 자동화는 GCP 서비스 계정 발급이라는 선행 작업이 필요해서 이번 범위에서는
+  단순 CSV export + 수동 업로드로 결정). 상세 가이드는 `bi/README.md`.
+
+## 4단계 검증 결과 (완료)
+`shop_pipeline` DAG를 트리거해서 `export_marts_to_csv` 태스크가 `bi/exports/`에 3개
+CSV(일별 매출/상품별 판매/사용자 LTV)를 실제로 정상 생성하는 것까지 확인함. Google
+Sheets 업로드 및 Looker Studio 보고서 작성은 `bi/README.md` 가이드에 따라 사용자가 진행.
+
 ## 진행 상황 로그
 - 2026-07-01: 기획 완료. 타겟 공고 3건 분석, 아키텍처 초안 확정, 도메인 데이터(이커머스) 결정. 다음 단계는 데이터셋 확정 및 스키마 상세 설계.
 - 2026-07-01: 실행 환경 결정(로컬 에뮬레이션, Docker Compose, Faker 시드 데이터). 1단계(CDC+Kafka+데이터레이크) 스캐폴딩 착수.
@@ -153,3 +205,6 @@ Airflow DAG(`shop_pipeline`, 5분 주기)를 수동 트리거해서 end-to-end �
 - 2026-07-01: 2단계 스캐폴딩 착수 — DuckDB(웨어하우스)+Airflow(LocalExecutor)+dbt(staging/marts) 구성 결정 및 파일 작성 완료. 다음은 실제 기동/검증.
 - 2026-07-01: 2단계 완료 — Airflow DAG가 GCS raw 파일을 DuckDB에 적재하고 dbt로 staging/mart까지 빌드하는 것을 실제로 검증함(일별 매출/상품별 판매/재구매 고객 마트 데이터 확인). 다음 단계는 3단계(데이터 품질 체크 + 지연 모니터링) 또는 4단계(BI 대시보드) 중 선택 필요.
 - 2026-07-01: GitHub 리포지토리 생성 및 최초 push 완료 (https://github.com/donghajang213/ecommerce-cdc-pipeline, public). gh CLI 설치 + 디바이스 로그인으로 인증.
+- 2026-07-02: 3단계(데이터 품질 체크 + 지연 모니터링) 완료 — dbt relationships/singular 테스트, `pipeline_latency_log`(CDC 이벤트 지연 측정), `data_quality_gate`(SLA+dbt test 검사 후 위반 시 태스크 실패로 알림) 구현 및 실제 docker compose 스택에서 검증. 검증 과정에서 실제 CDC 정합성 버그 2건(동시각 이벤트 순서 뒤바뀜, 이기종 토픽 배치 경계 지연)을 발견하고 수정함 — 좋은 블로그 소재. 다음 단계는 4단계(Looker Studio/Tableau BI 대시보드).
+- 2026-07-02: 4단계(BI 대시보드) 완료 — dbt 마트를 CSV로 내보내는 `export_marts_to_csv` Airflow 태스크 추가, `bi/exports/*.csv` 생성까지 실제 검증함. Looker Studio는 클라우드 전용이라 Google Sheets 업로드 + Looker Studio 연결은 `bi/README.md` 가이드로 남기고 사용자가 수동 진행하는 것으로 범위를 나눔. 로드맵상 남은 항목은 5단계(Docker/K8s 배포 + CI/CD, 여유되면).
+- 2026-07-02: 1~4단계 Tistory 블로그 포스팅 초안 작성 완료 (`blog/01-cdc-kafka-datalake.md` ~ `blog/04-bi-dashboard.md`). 각 단계의 설계 결정/트러블슈팅/검증 결과를 스토리 형태로 정리함. 3편에는 실제로 발견한 CDC 정합성 버그 2건(동시각 이벤트 순서 뒤바뀜, 배치 경계 고아 레코드)을 핵심 소재로 다룸. 사용자가 내용 검토 후 Tistory에 직접 게시하면 됨. 다음 단계는 5단계(Docker/K8s 배포 + CI/CD) 진행 여부 결정.

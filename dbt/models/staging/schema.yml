@@ -24,8 +24,23 @@ models:
         tests:
           - accepted_values:
               values: ["CREATED", "PAID", "SHIPPED", "DELIVERED", "CANCELLED"]
+      - name: user_id
+        tests:
+          - relationships:
+              to: ref('stg_users')
+              field: user_id
 
   - name: stg_order_items
     columns:
       - name: order_item_id
         tests: [unique, not_null]
+      - name: order_id
+        tests:
+          - relationships:
+              to: ref('stg_orders')
+              field: order_id
+      - name: product_id
+        tests:
+          - relationships:
+              to: ref('stg_products')
+              field: product_id

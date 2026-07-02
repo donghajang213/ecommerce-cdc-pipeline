@@ -5,4 +5,4 @@ select
     updated_at
 from {{ source('raw', 'inventory_raw') }}
 where not __deleted
-qualify row_number() over (partition by product_id order by __ts_ms desc) = 1
+qualify row_number() over (partition by product_id order by __ts_ms desc, __seq desc) = 1

@@ -8,6 +8,7 @@ Debezium 이벤트 한 줄(JSON) 예시:
 """
 import json
 import os
+import statistics
 from datetime import datetime, timezone
 
 import duckdb
@@ -32,6 +33,7 @@ TABLES = {
                 updated_at TIMESTAMP,
                 __op VARCHAR,
                 __ts_ms BIGINT,
+                __seq BIGINT,
                 __deleted BOOLEAN
             )
         """,
@@ -50,6 +52,7 @@ TABLES = {
                 updated_at TIMESTAMP,
                 __op VARCHAR,
                 __ts_ms BIGINT,
+                __seq BIGINT,
                 __deleted BOOLEAN
             )
         """,
@@ -64,6 +67,7 @@ TABLES = {
                 updated_at TIMESTAMP,
                 __op VARCHAR,
                 __ts_ms BIGINT,
+                __seq BIGINT,
                 __deleted BOOLEAN
             )
         """,
@@ -81,6 +85,7 @@ TABLES = {
                 updated_at TIMESTAMP,
                 __op VARCHAR,
                 __ts_ms BIGINT,
+                __seq BIGINT,
                 __deleted BOOLEAN
             )
         """,
@@ -98,6 +103,7 @@ TABLES = {
                 created_at TIMESTAMP,
                 __op VARCHAR,
                 __ts_ms BIGINT,
+                __seq BIGINT,
                 __deleted BOOLEAN
             )
         """,
@@ -124,6 +130,22 @@ def get_duckdb_connection():
         )
         """
     )
+    # Debezium ts_ms는 밀리초 단위라 짧은 시간 안에 벌어진 이벤트(예: 주문 생성 직후 총액
+    # 업데이트)는 값이 동률일 수 있다. staging 뷰에서 "최신 상태"를 안정적으로 고르려면
+    # ts_ms만으로는 부족해서, 적재 순서를 보장하는 별도 시퀀스(__seq)를 함께 남긴다.
+    con.execute("CREATE SEQUENCE IF NOT EXISTS event_seq START 1")
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS pipeline_latency_log (
+            run_ts TIMESTAMP,
+            table_name VARCHAR,
+            event_count BIGINT,
+            avg_latency_seconds DOUBLE,
+            max_latency_seconds DOUBLE,
+            p95_latency_seconds DOUBLE
+        )
+        """
+    )
     return con
 
 
@@ -143,7 +165,25 @@ def _row_from_event(event: dict, timestamp_cols: list[str]) -> dict | None:
     return row
 
 
-def ingest_table(con, table: str) -> int:
+def _record_latency(con, run_ts: datetime, table: str, latencies: list[float]) -> None:
+    """CDC 이벤트 발생 시각(ts_ms)부터 이번 배치에서 실제 적재되기까지 걸린 지연(초)을 집계해 기록.
+    지연이 크면(=SLA 초과) data_quality_gate 태스크가 이를 감지해 Airflow 태스크를 실패시킨다."""
+    latencies.sort()
+    p95_idx = min(len(latencies) - 1, int(len(latencies) * 0.95))
+    con.execute(
+        "INSERT INTO pipeline_latency_log VALUES (?, ?, ?, ?, ?, ?)",
+        [
+            run_ts,
+            table,
+            len(latencies),
+            statistics.mean(latencies),
+            max(latencies),
+            latencies[p95_idx],
+        ],
+    )
+
+
+def ingest_table(con, table: str, run_ts: datetime) -> int:
     """지정한 테이블의 새 raw 파일들을 GCS 에뮬레이터에서 읽어 DuckDB에 적재. 적재된 이벤트 수 반환."""
     cfg = TABLES[table]
     con.execute(cfg["ddl"])
@@ -155,11 +195,14 @@ def ingest_table(con, table: str) -> int:
     loaded_names = {
         r[0] for r in con.execute("SELECT object_name FROM _raw_ingest_log").fetchall()
     }
-    new_blobs = [b for b in blobs if b.name not in loaded_names]
+    new_blobs = sorted(
+        (b for b in blobs if b.name not in loaded_names), key=lambda b: b.name
+    )
     if not new_blobs:
         return 0
 
     total_rows = 0
+    latencies: list[float] = []
     for blob in new_blobs:
         content = blob.download_as_text()
         rows = []
@@ -170,7 +213,11 @@ def ingest_table(con, table: str) -> int:
             event = json.loads(line)
             row = _row_from_event(event, cfg["timestamp_cols"])
             if row is not None:
+                row["__seq"] = con.execute("SELECT nextval('event_seq')").fetchone()[0]
                 rows.append(row)
+                if event.get("ts_ms") is not None:
+                    event_time = datetime.fromtimestamp(event["ts_ms"] / 1000, tz=timezone.utc)
+                    latencies.append((run_ts - event_time).total_seconds())
 
         if rows:
             columns = list(rows[0].keys())
@@ -185,14 +232,18 @@ def ingest_table(con, table: str) -> int:
 
         con.execute("INSERT INTO _raw_ingest_log (object_name) VALUES (?)", [blob.name])
 
+    if latencies:
+        _record_latency(con, run_ts, table, latencies)
+
     return total_rows
 
 
 def ingest_all() -> None:
     con = get_duckdb_connection()
+    run_ts = datetime.now(timezone.utc)
     try:
         for table in TABLES:
-            n = ingest_table(con, table)
+            n = ingest_table(con, table, run_ts)
             print(f"[ingest] {table}: loaded {n} new events")
     finally:
         con.close()

@@ -16,3 +16,9 @@ models:
     marts:
       +materialized: table
       +schema: marts
+
+# 실패한 테스트의 위반 행을 별도 스키마 테이블로 저장 (BI 대시보드에서 DQ 실패 추이를 보여줄 소재)
+tests:
+  shop_analytics:
+    +store_failures: true
+    +schema: dq

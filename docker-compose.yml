@@ -163,6 +163,7 @@ services:
       - ./airflow/dags:/opt/airflow/dags
       - ./dbt:/opt/airflow/dbt
       - warehouse_data:/opt/airflow/warehouse
+      - ./bi/exports:/opt/airflow/exports
 
   airflow-scheduler:
     build: ./airflow
@@ -183,6 +184,7 @@ services:
       - ./airflow/dags:/opt/airflow/dags
       - ./dbt:/opt/airflow/dbt
       - warehouse_data:/opt/airflow/warehouse
+      - ./bi/exports:/opt/airflow/exports
 
 volumes:
   pgdata:
