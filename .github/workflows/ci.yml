@@ -62,12 +62,12 @@ jobs:
 
       - name: Debug - isolate the real dbt/duckdb failure
         run: |
-          echo "--- CPU flags on the runner ---"
-          docker exec airflow-scheduler bash -c 'grep -m1 flags /proc/cpuinfo' || echo "cpuinfo check exited $?"
+          echo "--- ingest_raw_to_duckdb (creates /opt/airflow/warehouse + the .duckdb file, like the DAG does) ---"
+          docker exec airflow-scheduler airflow tasks test shop_pipeline ingest_raw_to_duckdb "$(date -u +%F)"
+          echo "ingest exited with $?"
 
-          echo "--- python -c import duckdb ---"
-          docker exec airflow-scheduler python3 -c "import duckdb; print('duckdb import OK', duckdb.__version__)"
-          echo "duckdb import exited with $?"
+          echo "--- warehouse dir contents ---"
+          docker exec airflow-scheduler ls -la /opt/airflow/warehouse
 
           echo "--- dbt --version ---"
           docker exec airflow-scheduler dbt --version
