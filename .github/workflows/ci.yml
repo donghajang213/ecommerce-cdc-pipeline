@@ -66,7 +66,19 @@ jobs:
         # 열려다 락 충돌로 dbt_build가 즉시 죽는 문제가 있었다. `airflow dags test`는
         # 스케줄러를 거치지 않고 단일 동기 실행으로 끝나서 이 경합이 없고, 종료 코드로
         # 성공/실패를 바로 알 수 있다.
+        id: dag_test
         run: docker exec airflow-scheduler airflow dags test shop_pipeline "$(date -u +%F)"
+
+      - name: Debug - show dbt's own log file on failure
+        # dbt_build가 터미널 출력 없이 즉시 죽는 문제가 있었다. dbt는 항상
+        # <project-dir>/logs/dbt.log 에 구조화된 로그를 남기므로, 터미널 캡처가
+        # 비어 있어도 이 파일에 진짜 원인이 남아있을 수 있다.
+        if: failure() && steps.dag_test.outcome == 'failure'
+        run: |
+          echo "--- memory inside airflow-scheduler ---"
+          docker exec airflow-scheduler free -h || true
+          echo "--- dbt/logs/dbt.log ---"
+          docker exec airflow-scheduler cat /opt/airflow/dbt/logs/dbt.log || echo "no dbt.log found"
 
       - name: Dump service logs on failure
         if: failure()
