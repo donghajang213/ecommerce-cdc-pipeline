@@ -60,9 +60,27 @@ jobs:
           docker logs kafka-connect --tail 50
           exit 1
 
-      - name: Debug - run dbt directly to see the real error
+      - name: Debug - isolate the real dbt/duckdb failure
         run: |
-          docker exec airflow-scheduler bash -lc 'cd /opt/airflow/dbt && dbt run --profiles-dir . --debug' || true
+          echo "--- CPU flags on the runner ---"
+          docker exec airflow-scheduler bash -c 'grep -m1 flags /proc/cpuinfo' || echo "cpuinfo check exited $?"
+
+          echo "--- python -c import duckdb ---"
+          docker exec airflow-scheduler python3 -c "import duckdb; print('duckdb import OK', duckdb.__version__)"
+          echo "duckdb import exited with $?"
+
+          echo "--- dbt --version ---"
+          docker exec airflow-scheduler dbt --version
+          echo "dbt --version exited with $?"
+
+          echo "--- dbt debug (connection/config check, not a run) ---"
+          docker exec -w /opt/airflow/dbt airflow-scheduler dbt debug --profiles-dir .
+          echo "dbt debug exited with $?"
+
+          echo "--- dbt run ---"
+          docker exec -w /opt/airflow/dbt airflow-scheduler dbt run --profiles-dir .
+          echo "dbt run exited with $?"
+          true
 
       - name: Run shop_pipeline DAG end-to-end
         # `airflow dags trigger`는 DAG를 unpause하는 순간 스케줄러가 자동으로 잡는
