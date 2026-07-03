@@ -66,7 +66,23 @@ jobs:
         # 열려다 락 충돌로 dbt_build가 즉시 죽는 문제가 있었다. `airflow dags test`는
         # 스케줄러를 거치지 않고 단일 동기 실행으로 끝나서 이 경합이 없고, 종료 코드로
         # 성공/실패를 바로 알 수 있다.
-        run: docker exec airflow-scheduler airflow dags test shop_pipeline "$(date -u +%F)"
+        #
+        # GitHub 호스팅 러너(2 vCPU/7GB)에서는 Postgres x2 + Kafka + Kafka Connect +
+        # Airflow가 이미 다 떠 있는 상태라 자원 경합이 심해서, `dbt run`이 어댑터
+        # 플러그인 로딩 중 드물게 출력 하나 없이 즉시 죽는(exit code 2) 현상을 관찰함
+        # (로컬에서는 동일 패키지 버전으로 재현 안 됨 → 로직 버그가 아니라 자원 경합에
+        # 의한 일시적 실패로 판단). 최대 3회까지 재시도해서 완화한다.
+        run: |
+          for attempt in 1 2 3; do
+            echo "Attempt $attempt/3"
+            if docker exec airflow-scheduler airflow dags test shop_pipeline "$(date -u +%F)"; then
+              exit 0
+            fi
+            echo "Attempt $attempt failed, retrying in 15s..."
+            sleep 15
+          done
+          echo "shop_pipeline failed after 3 attempts"
+          exit 1
 
       - name: Dump service logs on failure
         if: failure()
