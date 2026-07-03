@@ -198,6 +198,40 @@ DuckDB(main_marts.*) --export_marts_to_csv(Airflow)--> bi/exports/*.csv
 CSV(일별 매출/상품별 판매/사용자 LTV)를 실제로 정상 생성하는 것까지 확인함. Google
 Sheets 업로드 및 Looker Studio 보고서 작성은 `bi/README.md` 가이드에 따라 사용자가 진행.
 
+## 5단계 상세 설계 (CI/CD)
+
+로드맵의 "여유되면" 항목 중 K8s 배포 대신 CI/CD를 우선 선택. 이미 docker compose로
+전체 스택이 로컬 재현 가능한 상태에서 K8s로 옮기는 건 포트폴리오 대비 복잡도가 크고,
+반면 CI로 "코드 변경 시 파이프라인이 실제로 끝까지 도는지" 자동 검증하는 건 채용
+공고들이 공통으로 우대하는 CI/CD 경험을 훨씬 적은 비용으로 보여줄 수 있음.
+
+`.github/workflows/ci.yml`:
+- **lint job**: `ruff check --select=E9,F63,F7,F82`로 generator/lake-writer/airflow
+  dags의 문법 오류·미정의 이름만 빠르게 검사 (기존 코드 스타일 논쟁 없이 "고장 나면
+  잡아낸다"는 최소 기준).
+- **smoke-test job** (lint 통과 후 실행): GitHub Actions 러너에서 `docker compose up
+  -d --build`로 전체 스택(Postgres/Kafka/Debezium/lake-writer/fake-gcs-server/Airflow)을
+  실제로 기동 → CDC 이벤트가 데이터레이크에 도착할 때까지 대기 → `shop_pipeline` DAG를
+  고유 run-id로 트리거 → 완료까지 폴링 → 실패 시 태스크 로그를 덤프하고 종료 코드 1 반환.
+  즉 지금까지 사람이 수동으로 반복했던 "docker compose up → DAG 트리거 → 성공 확인"
+  검증 절차를 그대로 자동화한 것.
+
+### 트러블슈팅 기록 (5단계)
+- **로컬에서 CI 스모크 테스트 로직을 검증하던 중 `data_quality_gate`가 latency SLA
+  위반으로 실패**: 원인은 CI 로직 버그가 아니라, 이전 세션에서 컨테이너가 중지됐다가
+  다시 켜지면서 처리되지 못하고 남아있던 CDC 이벤트(약 17시간 전 이벤트)가 뒤늦게
+  적재되며 `pipeline_latency_log`에 큰 latency로 잡힌 것. 같은 배치의 다른 테이블은
+  정상(수십 초) latency였고, 재트리거하면 바로 정상화됨을 확인. GitHub Actions
+  러너는 매 실행마다 완전히 새 환경이라 이런 백로그가 존재하지 않으므로 CI 스크립트는
+  수정하지 않음 — "모니터링이 실제로 실 다운타임을 잡아낸 사례"로 기록.
+
+## 5단계 검증 결과 (완료)
+로컬에서 워크플로 안의 각 명령(`airflow dags list-import-errors`,
+`airflow dags trigger --run-id`, `airflow dags list-runs -o plain` 파싱,
+`airflow tasks states-for-dag-run`)을 실제 컨테이너에 대해 그대로 실행해 동작을
+확인함. `ruff` lint도 현재 코드 기준 통과 확인. GitHub Actions 러너에서의 실제 실행은
+다음 push 시 자동으로 트리거됨.
+
 ## 진행 상황 로그
 - 2026-07-01: 기획 완료. 타겟 공고 3건 분석, 아키텍처 초안 확정, 도메인 데이터(이커머스) 결정. 다음 단계는 데이터셋 확정 및 스키마 상세 설계.
 - 2026-07-01: 실행 환경 결정(로컬 에뮬레이션, Docker Compose, Faker 시드 데이터). 1단계(CDC+Kafka+데이터레이크) 스캐폴딩 착수.
@@ -208,3 +242,4 @@ Sheets 업로드 및 Looker Studio 보고서 작성은 `bi/README.md` 가이드�
 - 2026-07-02: 3단계(데이터 품질 체크 + 지연 모니터링) 완료 — dbt relationships/singular 테스트, `pipeline_latency_log`(CDC 이벤트 지연 측정), `data_quality_gate`(SLA+dbt test 검사 후 위반 시 태스크 실패로 알림) 구현 및 실제 docker compose 스택에서 검증. 검증 과정에서 실제 CDC 정합성 버그 2건(동시각 이벤트 순서 뒤바뀜, 이기종 토픽 배치 경계 지연)을 발견하고 수정함 — 좋은 블로그 소재. 다음 단계는 4단계(Looker Studio/Tableau BI 대시보드).
 - 2026-07-02: 4단계(BI 대시보드) 완료 — dbt 마트를 CSV로 내보내는 `export_marts_to_csv` Airflow 태스크 추가, `bi/exports/*.csv` 생성까지 실제 검증함. Looker Studio는 클라우드 전용이라 Google Sheets 업로드 + Looker Studio 연결은 `bi/README.md` 가이드로 남기고 사용자가 수동 진행하는 것으로 범위를 나눔. 로드맵상 남은 항목은 5단계(Docker/K8s 배포 + CI/CD, 여유되면).
 - 2026-07-02: 1~4단계 Tistory 블로그 포스팅 초안 작성 완료 (`blog/01-cdc-kafka-datalake.md` ~ `blog/04-bi-dashboard.md`). 각 단계의 설계 결정/트러블슈팅/검증 결과를 스토리 형태로 정리함. 3편에는 실제로 발견한 CDC 정합성 버그 2건(동시각 이벤트 순서 뒤바뀜, 배치 경계 고아 레코드)을 핵심 소재로 다룸. 사용자가 내용 검토 후 Tistory에 직접 게시하면 됨. 다음 단계는 5단계(Docker/K8s 배포 + CI/CD) 진행 여부 결정.
+- 2026-07-03: 5단계(CI/CD) 완료 — K8s 대신 CI/CD 위주로 진행 결정. `.github/workflows/ci.yml`에 lint job(ruff)과 smoke-test job(docker compose로 전체 스택 기동 → CDC 이벤트 도착 대기 → shop_pipeline DAG 트리거 → 완료까지 폴링 → 실패 시 태스크 로그 덤프) 추가. 로컬에서 워크플로 내 모든 명령을 실제 컨테이너로 검증함. 검증 중 latency SLA 위반이 한 번 발생했는데, 원인은 세션 재개 시 남아있던 17시간 전 CDC 이벤트 백로그였고 CI 스크립트 자체 문제가 아님을 확인(재트리거로 정상화). 로드맵 5단계까지 전부 완료 — 포트폴리오 코드/문서 작업은 마무리 단계.

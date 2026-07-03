@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Python syntax / undefined-name check
+        run: ruff check --select=E9,F63,F7,F82 generator lake-writer airflow/dags
+
+  smoke-test:
+    runs-on: ubuntu-latest
+    needs: lint
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and start the full stack
+        run: docker compose up -d --build
+
+      - name: Wait for Airflow to be ready
+        run: |
+          for i in $(seq 1 40); do
+            if docker exec airflow-scheduler airflow dags list-import-errors >/dev/null 2>&1; then
+              echo "Airflow scheduler ready"
+              break
+            fi
+            sleep 5
+          done
+          docker exec airflow-scheduler airflow dags list-import-errors
+
+      - name: Wait for CDC events to reach the data lake
+        run: |
+          for i in $(seq 1 30); do
+            if docker logs lake-writer 2>&1 | grep -q "raw/orders/"; then
+              echo "orders CDC events observed in the lake"
+              break
+            fi
+            sleep 5
+          done
+          docker logs lake-writer --tail 20
+
+      - name: Trigger shop_pipeline DAG and wait for completion
+        run: |
+          docker exec airflow-scheduler airflow dags unpause shop_pipeline
+          run_id="ci-smoke-$(date +%s)"
+          docker exec airflow-scheduler airflow dags trigger shop_pipeline --run-id "$run_id"
+
+          state="queued"
+          for i in $(seq 1 40); do
+            state=$(docker exec airflow-scheduler airflow dags list-runs -d shop_pipeline -o plain 2>/dev/null \
+              | awk -v rid="$run_id" '$2==rid {print $3}')
+            if [ "$state" = "success" ] || [ "$state" = "failed" ]; then
+              break
+            fi
+            sleep 10
+          done
+
+          echo "Final DAG run state: $state"
+          docker exec airflow-scheduler airflow tasks states-for-dag-run shop_pipeline "$run_id" || true
+
+          if [ "$state" != "success" ]; then
+            echo "DAG run did not succeed, dumping task logs for debugging"
+            docker exec airflow-scheduler bash -lc "find /opt/airflow/logs -path \"*${run_id}*\" -name '*.log' -exec echo '--- {} ---' \; -exec cat {} \;"
+            exit 1
+          fi
+
+      - name: Dump service logs on failure
+        if: failure()
+        run: docker compose logs --tail 200
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
