@@ -168,6 +168,10 @@ services:
   airflow-scheduler:
     build: ./airflow
     container_name: airflow-scheduler
+    # GitHub Actions 호스팅 러너의 도커는 /dev/shm 기본값이 64MB로 매우 작아서(로컬
+    # Docker Desktop은 훨씬 넉넉함), dbt-core가 의존하는 라이브러리가 공유 메모리를
+    # 쓰다가 로깅 초기화도 하기 전에 조용히 죽는(exit code 2, 무출력) 문제가 있었다.
+    shm_size: "512m"
     depends_on:
       airflow-init:
         condition: service_completed_successfully
