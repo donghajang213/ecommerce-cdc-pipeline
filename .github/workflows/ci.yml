@@ -60,6 +60,10 @@ jobs:
           docker logs kafka-connect --tail 50
           exit 1
 
+      - name: Debug - run dbt directly to see the real error
+        run: |
+          docker exec airflow-scheduler bash -lc 'cd /opt/airflow/dbt && dbt run --profiles-dir . --debug' || true
+
       - name: Run shop_pipeline DAG end-to-end
         # `airflow dags trigger`는 DAG를 unpause하는 순간 스케줄러가 자동으로 잡는
         # 현재 구간의 scheduled 실행과 경합해서, 두 실행이 같은 DuckDB 파일을 동시에
