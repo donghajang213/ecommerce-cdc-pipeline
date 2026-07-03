@@ -74,14 +74,7 @@ jobs:
           echo "dbt --version exited with $?"
 
           echo "--- raw duckdb connect + execute (no dbt at all) ---"
-          docker exec airflow-scheduler python3 -c "
-import duckdb
-print('connecting...', flush=True)
-con = duckdb.connect('/opt/airflow/warehouse/shop.duckdb')
-print('connected, running query...', flush=True)
-print(con.execute('select 1').fetchall(), flush=True)
-print('raw duckdb connect+execute OK', flush=True)
-"
+          docker exec airflow-scheduler python3 -c "import duckdb; print('connecting...', flush=True); con = duckdb.connect('/opt/airflow/warehouse/shop.duckdb'); print('connected, running query...', flush=True); print(con.execute('select 1').fetchall(), flush=True); print('raw duckdb connect+execute OK', flush=True)"
           echo "raw duckdb connect+execute exited with $?"
 
           echo "--- dbt debug (connection/config check, not a run) ---"
