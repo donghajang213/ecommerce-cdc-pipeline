@@ -13,7 +13,7 @@ import duckdb
 from airflow.exceptions import AirflowException
 
 DUCKDB_PATH = os.environ.get("DUCKDB_PATH", "/opt/airflow/warehouse/shop.duckdb")
-DBT_TARGET_DIR = os.environ.get("DBT_TARGET_DIR", "/opt/airflow/dbt/target")
+DBT_TARGET_DIR = os.environ.get("DBT_TARGET_DIR", "/opt/airflow/dbt_target")
 # DAG가 5분 주기이므로 그 2배를 SLA로 둔다 (한 배치 밀려도 알림이 안 울리게).
 LATENCY_SLA_SECONDS = int(os.environ.get("LATENCY_SLA_SECONDS", "600"))
 

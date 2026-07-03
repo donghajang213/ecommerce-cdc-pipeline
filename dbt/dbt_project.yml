@@ -5,7 +5,18 @@ config-version: 2
 profile: shop_analytics
 
 model-paths: ["models"]
-target-path: "target"
+# target-path/log-path를 바인드 마운트되는 프로젝트 디렉터리(/opt/airflow/dbt) 밖으로
+# 뺀다. 이 디렉터리는 호스트의 ./dbt를 그대로 마운트하는데, GitHub Actions처럼 매번
+# 완전히 새로 체크아웃하는 환경에서는 dbt/target, dbt/logs가 호스트에 아직 없어서
+# Docker가 자동으로 root 소유로 만들어버리고, 컨테이너 안의 비-root airflow 유저가
+# 쓰지 못해 dbt가 로거 초기화 단계에서 조용히 실패하는 문제가 있었다.
+#
+# log-path는 dbt가 Jinja/env_var 컨텍스트를 완전히 준비하기 전, 로거를 맨 처음
+# 부트스트랩할 때 읽힌다는 걸 실제로 겪었다 — {{ env_var(...) }}를 넣었더니 렌더링되지
+# 않은 문자열이 그대로 디렉터리 이름이 돼버렸다. 그래서 Jinja 없이 Dockerfile의 실제
+# 경로와 동일한 리터럴 값을 그대로 적는다.
+target-path: "/opt/airflow/dbt_target"
+log-path: "/opt/airflow/dbt_logs"
 clean-targets: ["target", "dbt_packages"]
 
 models:

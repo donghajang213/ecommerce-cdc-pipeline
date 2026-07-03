@@ -250,16 +250,37 @@ Sheets 업로드 및 Looker Studio 보고서 작성은 `bi/README.md` 가이드�
   출력에 이미 있었음: `Plugins: - duckdb: 1.8.1 - Update available! At least one
   plugin is out of date with dbt-core.` — `airflow/Dockerfile`이 `dbt-duckdb==1.8.1`만
   고정하고 `dbt-core`는 고정하지 않아서, pip가 훨씬 최신인 `dbt-core==1.11.12`를
-  딸려왔고 이 조합에서 어댑터 프로토콜이 안 맞아 dbt가 배너도 못 찍고 죽었던 것.
-  `dbt-core==1.8.9`(dbt-duckdb 1.8.1과 같은 1.8.x 계열)로 명시적으로 고정해서 해결—
-  로컬에서 `docker build --no-cache`로 재현 후 `dbt debug`가 정상 출력을 내는 것까지
-  확인.
+  딸려왔었다. `dbt-core==1.8.9`(dbt-duckdb 1.8.1과 같은 1.8.x 계열)로 명시적으로
+  고정해서 로컬 `docker build --no-cache` 단독 컨테이너 테스트에서는 `dbt debug`가
+  정상 동작하는 것까지 확인했지만, **실제 GitHub Actions에 다시 push하니 정확히 같은
+  증상(무출력, exit code 2)으로 또 실패함** — 이 버전 고정은 그 자체로 맞는 조치였지만
+  진짜 원인은 아니었다.
+- **(진짜 원인) `/opt/airflow/dbt/logs` 디렉터리 권한 문제**: dbt를 Airflow 밖에서
+  Python API(`dbtRunner`)로 직접 호출해보니 그제서야 진짜 예외가 잡힘 —
+  `PermissionError: [Errno 13] Permission denied: '/opt/airflow/dbt/logs'`.
+  `dbt/` 디렉터리는 호스트의 `./dbt`를 그대로 바인드 마운트하는데, `dbt/logs`,
+  `dbt/target`은 `.gitignore`에 있어서 로컬에는 이미 예전에 생성돼 있었지만, GitHub
+  Actions는 매번 완전히 새로 체크아웃하기 때문에 이 디렉터리가 호스트에 아예 없었다.
+  이 상태로 Docker가 바인드 마운트를 걸면 없는 호스트 경로를 **root 소유로 자동
+  생성**하는데, 컨테이너 안의 `airflow`는 비-root 유저라 그 디렉터리에 쓸 수 없어서
+  dbt가 로거를 초기화하기도 전에 조용히 죽었던 것. 로컬 Docker Desktop(WSL2)에서는
+  이 문제가 단 한 번도 재현되지 않아서 여러 차례의 다른 가설(스케줄러 경합, 버전
+  불일치, `/dev/shm` 용량)을 먼저 거쳐야 했다. 최종 해결: `dbt_project.yml`의
+  `target-path`/`log-path`를 바인드 마운트 밖의 컨테이너 전용 경로
+  (`/opt/airflow/dbt_target`, `/opt/airflow/dbt_logs`)로 옮기고, `Dockerfile`에서
+  이 디렉터리를 미리 `airflow` 소유로 만들어둠. 겸사겸사 `dbt_build` 태스크도
+  BashOperator(서브프로세스로 `dbt` CLI 실행)에서 다른 태스크들과 동일하게
+  PythonOperator + `dbtRunner`(같은 프로세스 내 Python API 호출)로 바꿔서, 앞으로
+  비슷한 서브프로세스발 문제를 원천적으로 줄임 — 이번에 실제 예외가 터미널에 바로
+  보인 것도 이 전환 덕분이었다.
 
 ## 5단계 검증 결과 (완료)
 로컬에서 워크플로 안의 각 명령을 실제 컨테이너에 대해 그대로 실행해 동작을 확인했고,
-`ruff` lint도 통과 확인. 이후 실제 GitHub Actions에 push해서 스모크 테스트를 돌렸고,
-위 트러블슈팅에 적은 CI 전용 버그 3건(타임아웃 무시, 스케줄러 경합, dbt-core/dbt-duckdb
-버전 불일치)을 실제로 발견·수정함.
+`ruff` lint도 통과 확인. 이후 실제 GitHub Actions에 여러 차례 push하며 스모크 테스트를
+돌렸고, 위 트러블슈팅에 적은 CI 전용 버그들(타임아웃 무시, 스케줄러 경합, dbt-core/
+dbt-duckdb 버전 불일치, 그리고 최종 원인이었던 바인드 마운트 권한 문제)을 순서대로
+발견·수정함. 로컬에서는 수정 후 `ingest → dbt_build → export → dq_gate` 전체가
+dbt test 21건 전부 통과로 성공하는 것까지 확인함.
 
 ## 진행 상황 로그
 - 2026-07-01: 기획 완료. 타겟 공고 3건 분석, 아키텍처 초안 확정, 도메인 데이터(이커머스) 결정. 다음 단계는 데이터셋 확정 및 스키마 상세 설계.
