@@ -44,40 +44,29 @@ jobs:
           docker exec airflow-scheduler airflow dags list-import-errors
 
       - name: Wait for CDC events to reach the data lake
+        # GitHub-hosted 러너는 이미지 빌드/Kafka Connect 기동이 로컬보다 훨씬 느릴 수 있어서
+        # (관찰상 최대 ~2.5분) 넉넉하게 기다리고, 타임아웃이면 반드시 실패 처리한다.
+        # (예전 버전은 타임아웃돼도 그냥 통과해서 빈 데이터로 DAG를 돌리는 버그가 있었음)
         run: |
-          for i in $(seq 1 30); do
+          for i in $(seq 1 90); do
             if docker logs lake-writer 2>&1 | grep -q "raw/orders/"; then
               echo "orders CDC events observed in the lake"
-              break
+              exit 0
             fi
             sleep 5
           done
-          docker logs lake-writer --tail 20
+          echo "Timed out waiting for CDC events to reach the data lake"
+          docker logs lake-writer --tail 50
+          docker logs kafka-connect --tail 50
+          exit 1
 
-      - name: Trigger shop_pipeline DAG and wait for completion
-        run: |
-          docker exec airflow-scheduler airflow dags unpause shop_pipeline
-          run_id="ci-smoke-$(date +%s)"
-          docker exec airflow-scheduler airflow dags trigger shop_pipeline --run-id "$run_id"
-
-          state="queued"
-          for i in $(seq 1 40); do
-            state=$(docker exec airflow-scheduler airflow dags list-runs -d shop_pipeline -o plain 2>/dev/null \
-              | awk -v rid="$run_id" '$2==rid {print $3}')
-            if [ "$state" = "success" ] || [ "$state" = "failed" ]; then
-              break
-            fi
-            sleep 10
-          done
-
-          echo "Final DAG run state: $state"
-          docker exec airflow-scheduler airflow tasks states-for-dag-run shop_pipeline "$run_id" || true
-
-          if [ "$state" != "success" ]; then
-            echo "DAG run did not succeed, dumping task logs for debugging"
-            docker exec airflow-scheduler bash -lc "find /opt/airflow/logs -path \"*${run_id}*\" -name '*.log' -exec echo '--- {} ---' \; -exec cat {} \;"
-            exit 1
-          fi
+      - name: Run shop_pipeline DAG end-to-end
+        # `airflow dags trigger`는 DAG를 unpause하는 순간 스케줄러가 자동으로 잡는
+        # 현재 구간의 scheduled 실행과 경합해서, 두 실행이 같은 DuckDB 파일을 동시에
+        # 열려다 락 충돌로 dbt_build가 즉시 죽는 문제가 있었다. `airflow dags test`는
+        # 스케줄러를 거치지 않고 단일 동기 실행으로 끝나서 이 경합이 없고, 종료 코드로
+        # 성공/실패를 바로 알 수 있다.
+        run: docker exec airflow-scheduler airflow dags test shop_pipeline "$(date -u +%F)"
 
       - name: Dump service logs on failure
         if: failure()

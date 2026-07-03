@@ -224,13 +224,27 @@ Sheets 업로드 및 Looker Studio 보고서 작성은 `bi/README.md` 가이드�
   정상(수십 초) latency였고, 재트리거하면 바로 정상화됨을 확인. GitHub Actions
   러너는 매 실행마다 완전히 새 환경이라 이런 백로그가 존재하지 않으므로 CI 스크립트는
   수정하지 않음 — "모니터링이 실제로 실 다운타임을 잡아낸 사례"로 기록.
+- **실제 GitHub Actions에서 첫 실행 시 진짜 CI 버그 2건 발견** (로컬 검증만으로는
+  못 잡았던 문제들 — GitHub 호스팅 러너의 느린 콜드스타트에서만 드러남):
+  1. "CDC 이벤트 대기" 스텝이 재시도를 다 소진해도 그냥 통과해버림(`exit 1` 없음).
+     GitHub 러너는 이미지 빌드/Kafka Connect 기동이 로컬보다 훨씬 느려서(관찰상
+     `lake-writer`가 실제 데이터를 쓰기까지 2.5분 이상 걸림, 기존 타임아웃은 150초)
+     대기가 만료됐는데도 스크립트가 이를 실패로 간주하지 않고 그냥 빈 데이터 상태로
+     DAG를 실행해버렸다. 재시도 횟수를 늘리고(90회, 7.5분) 타임아웃 시 명시적으로
+     `exit 1`하도록 수정.
+  2. `airflow dags unpause` 직후 스케줄러가 자동으로 잡는 현재 구간의 scheduled
+     실행과, 곧이어 실행한 수동 `airflow dags trigger`가 시간상 겹치면서 두 DAG
+     run이 동시에 같은 DuckDB 파일을 열려다 락 충돌로 `dbt_build`가 즉시(2초 만에,
+     출력도 없이) 죽는 문제가 실제로 발생함. `max_active_runs=1` 설정만으로는 이
+     경합을 막지 못했음. `airflow dags trigger` + 폴링 대신 `airflow dags test
+     shop_pipeline <date>`로 교체해서 해결 — 이 명령은 스케줄러를 거치지 않고 단일
+     동기 실행으로 DAG 전체를 돌리고, 실패 시 `SystemExit("DagRun failed")`로 종료
+     코드를 통해 바로 실패를 알려줘서 폴링 로직 자체가 필요 없어짐.
 
 ## 5단계 검증 결과 (완료)
-로컬에서 워크플로 안의 각 명령(`airflow dags list-import-errors`,
-`airflow dags trigger --run-id`, `airflow dags list-runs -o plain` 파싱,
-`airflow tasks states-for-dag-run`)을 실제 컨테이너에 대해 그대로 실행해 동작을
-확인함. `ruff` lint도 현재 코드 기준 통과 확인. GitHub Actions 러너에서의 실제 실행은
-다음 push 시 자동으로 트리거됨.
+로컬에서 워크플로 안의 각 명령을 실제 컨테이너에 대해 그대로 실행해 동작을 확인했고,
+`ruff` lint도 통과 확인. 이후 실제 GitHub Actions에 push해서 스모크 테스트를 돌렸고,
+위 트러블슈팅에 적은 CI 전용 버그 2건을 실제로 발견·수정한 뒤 재실행까지 완료함.
 
 ## 진행 상황 로그
 - 2026-07-01: 기획 완료. 타겟 공고 3건 분석, 아키텍처 초안 확정, 도메인 데이터(이커머스) 결정. 다음 단계는 데이터셋 확정 및 스키마 상세 설계.
