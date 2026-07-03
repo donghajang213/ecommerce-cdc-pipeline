@@ -240,11 +240,26 @@ Sheets 업로드 및 Looker Studio 보고서 작성은 `bi/README.md` 가이드�
      shop_pipeline <date>`로 교체해서 해결 — 이 명령은 스케줄러를 거치지 않고 단일
      동기 실행으로 DAG 전체를 돌리고, 실패 시 `SystemExit("DagRun failed")`로 종료
      코드를 통해 바로 실패를 알려줘서 폴링 로직 자체가 필요 없어짐.
+- **`dbt_build`가 CI에서만, 100% 결정적으로, 아무 출력도 없이 2초 만에 죽는 문제
+  (exit code 2)**: 위 두 버그를 고친 뒤에도 계속 발생. 재시도로 완화되는 "자원 경합"이
+  아니라(3회 재시도 모두 동일하게 즉시 실패) 결정적 버그였음. `dbt debug`/`dbt run`을
+  Airflow 밖에서 직접 호출해 단계별로 격리 진단:
+  `python3 -c "import duckdb"` 성공 → `dbt --version` 성공 → 순수
+  `duckdb.connect()+execute('select 1')` 성공(=DuckDB 엔진 자체는 이 러너에서 완전히
+  정상) → **`dbt debug`/`dbt run`만 무출력으로 즉시 실패**. 범인은 `dbt --version`
+  출력에 이미 있었음: `Plugins: - duckdb: 1.8.1 - Update available! At least one
+  plugin is out of date with dbt-core.` — `airflow/Dockerfile`이 `dbt-duckdb==1.8.1`만
+  고정하고 `dbt-core`는 고정하지 않아서, pip가 훨씬 최신인 `dbt-core==1.11.12`를
+  딸려왔고 이 조합에서 어댑터 프로토콜이 안 맞아 dbt가 배너도 못 찍고 죽었던 것.
+  `dbt-core==1.8.9`(dbt-duckdb 1.8.1과 같은 1.8.x 계열)로 명시적으로 고정해서 해결—
+  로컬에서 `docker build --no-cache`로 재현 후 `dbt debug`가 정상 출력을 내는 것까지
+  확인.
 
 ## 5단계 검증 결과 (완료)
 로컬에서 워크플로 안의 각 명령을 실제 컨테이너에 대해 그대로 실행해 동작을 확인했고,
 `ruff` lint도 통과 확인. 이후 실제 GitHub Actions에 push해서 스모크 테스트를 돌렸고,
-위 트러블슈팅에 적은 CI 전용 버그 2건을 실제로 발견·수정한 뒤 재실행까지 완료함.
+위 트러블슈팅에 적은 CI 전용 버그 3건(타임아웃 무시, 스케줄러 경합, dbt-core/dbt-duckdb
+버전 불일치)을 실제로 발견·수정함.
 
 ## 진행 상황 로그
 - 2026-07-01: 기획 완료. 타겟 공고 3건 분석, 아키텍처 초안 확정, 도메인 데이터(이커머스) 결정. 다음 단계는 데이터셋 확정 및 스키마 상세 설계.

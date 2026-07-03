@@ -60,55 +60,13 @@ jobs:
           docker logs kafka-connect --tail 50
           exit 1
 
-      - name: Debug - isolate the real dbt/duckdb failure
-        run: |
-          echo "--- ingest_raw_to_duckdb (creates /opt/airflow/warehouse + the .duckdb file, like the DAG does) ---"
-          docker exec airflow-scheduler airflow tasks test shop_pipeline ingest_raw_to_duckdb "$(date -u +%F)"
-          echo "ingest exited with $?"
-
-          echo "--- warehouse dir contents ---"
-          docker exec airflow-scheduler ls -la /opt/airflow/warehouse
-
-          echo "--- dbt --version ---"
-          docker exec airflow-scheduler dbt --version
-          echo "dbt --version exited with $?"
-
-          echo "--- raw duckdb connect + execute (no dbt at all) ---"
-          docker exec airflow-scheduler python3 -c "import duckdb; print('connecting...', flush=True); con = duckdb.connect('/opt/airflow/warehouse/shop.duckdb'); print('connected, running query...', flush=True); print(con.execute('select 1').fetchall(), flush=True); print('raw duckdb connect+execute OK', flush=True)"
-          echo "raw duckdb connect+execute exited with $?"
-
-          echo "--- dbt debug (connection/config check, not a run) ---"
-          docker exec -w /opt/airflow/dbt airflow-scheduler dbt debug --profiles-dir .
-          echo "dbt debug exited with $?"
-
-          echo "--- dbt run ---"
-          docker exec -w /opt/airflow/dbt airflow-scheduler dbt run --profiles-dir .
-          echo "dbt run exited with $?"
-          true
-
       - name: Run shop_pipeline DAG end-to-end
         # `airflow dags trigger`는 DAG를 unpause하는 순간 스케줄러가 자동으로 잡는
         # 현재 구간의 scheduled 실행과 경합해서, 두 실행이 같은 DuckDB 파일을 동시에
         # 열려다 락 충돌로 dbt_build가 즉시 죽는 문제가 있었다. `airflow dags test`는
         # 스케줄러를 거치지 않고 단일 동기 실행으로 끝나서 이 경합이 없고, 종료 코드로
         # 성공/실패를 바로 알 수 있다.
-        #
-        # GitHub 호스팅 러너(2 vCPU/7GB)에서는 Postgres x2 + Kafka + Kafka Connect +
-        # Airflow가 이미 다 떠 있는 상태라 자원 경합이 심해서, `dbt run`이 어댑터
-        # 플러그인 로딩 중 드물게 출력 하나 없이 즉시 죽는(exit code 2) 현상을 관찰함
-        # (로컬에서는 동일 패키지 버전으로 재현 안 됨 → 로직 버그가 아니라 자원 경합에
-        # 의한 일시적 실패로 판단). 최대 3회까지 재시도해서 완화한다.
-        run: |
-          for attempt in 1 2 3; do
-            echo "Attempt $attempt/3"
-            if docker exec airflow-scheduler airflow dags test shop_pipeline "$(date -u +%F)"; then
-              exit 0
-            fi
-            echo "Attempt $attempt failed, retrying in 15s..."
-            sleep 15
-          done
-          echo "shop_pipeline failed after 3 attempts"
-          exit 1
+        run: docker exec airflow-scheduler airflow dags test shop_pipeline "$(date -u +%F)"
 
       - name: Dump service logs on failure
         if: failure()
