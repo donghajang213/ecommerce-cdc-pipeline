@@ -11,14 +11,12 @@
 from datetime import datetime
 
 from airflow import DAG
-from airflow.operators.bash import BashOperator
 from airflow.operators.python import PythonOperator
 
+from dbt_lib import run_dbt_build
 from dq_lib import run_quality_gate
 from export_lib import export_marts_to_csv as export_marts_to_csv_fn
 from ingest_lib import ingest_all
-
-DBT_PROJECT_DIR = "/opt/airflow/dbt"
 
 with DAG(
     dag_id="shop_pipeline",
@@ -34,13 +32,9 @@ with DAG(
         python_callable=ingest_all,
     )
 
-    dbt_build = BashOperator(
+    dbt_build = PythonOperator(
         task_id="dbt_build",
-        cwd=DBT_PROJECT_DIR,
-        bash_command=(
-            f"dbt run --profiles-dir {DBT_PROJECT_DIR} "
-            f"&& dbt test --profiles-dir {DBT_PROJECT_DIR}"
-        ),
+        python_callable=run_dbt_build,
     )
 
     export_marts_to_csv = PythonOperator(
