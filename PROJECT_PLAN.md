@@ -297,11 +297,16 @@ dbt test 21건 전부 통과로 성공하는 것까지 확인함.
 - 2026-07-05: GCP 관련 상황 정리 — "GCP 연결"이 필요하다고 생각했으나, 실제로 남은 작업은 `bi/README.md`의 Google Sheets 업로드 + Looker Studio 연결(둘 다 개인 Google 계정으로 브라우저에서 수동 진행하는 일회성 작업)뿐이고 GCS/BigQuery 같은 실제 GCP 인프라는 필요하지 않음. 다만 진행 중 기존 GCP 프로젝트 `dataengineer-demo-a51c4`에 빌링 계정(`01A59C-739527-82790C`)을 사용자 승인 하에 연결함 — 이 프로젝트는 BigQuery/Storage API가 이미 활성화되어 있어 향후 "DuckDB 대신 실제 BigQuery/GCS로 업그레이드"하고 싶을 때 바로 쓸 수 있음(현재 로드맵상 필수는 아님, 예산 알림은 아직 미설정).
 - 2026-07-05: 전체 스택을 최신 `main` 코드로 재빌드/재기동해서 `ingest → dbt_build → dq_gate → export` 전체 성공 검증. 재기동 과정에서 두 가지 이슈 발견/해결: ① DuckDB 웨어하우스 파일이 예전 스키마(`__seq` 컬럼 없음)로 남아있어 최신 ingest 코드와 안 맞아 실패 — 로컬 전용 파일이라 볼륨을 지우고 재생성하는 것으로 해결(리뷰어가 처음 클론할 때는 발생하지 않는 이슈). ② `dq_gate`가 `order_items`가 아직 적재 안 된 `orders`를 참조하는 7건을 잡아내며 실패 — 재트리거하니 바로 정상화됨. 두 테이블이 서로 다른 Kafka 토픽에서 독립적인 타이머로 flush되는 lake-writer 구조상 생기는, 이미 3단계에서도 관찰했던 "배치 경계 지연"과 같은 종류의 일시적 현상이며 파이프라인 버그가 아님. `bi/exports/*.csv` 정상 생성까지 확인.
 
-## 남은 작업 (다음에 이어서 할 것)
-로드맵 1~5단계 코드/자동화는 전부 완료. 아래는 **브라우저에서 개인 Google 계정으로 수동 진행**해야 해서 자동화 대상이 아닌 항목:
-1. `bi/README.md` 가이드대로 `bi/exports/*.csv` 3개를 Google Sheets에 업로드
-2. Looker Studio에서 그 Sheets를 데이터 소스로 연결해 대시보드 구성 (README에 추천 차트 구성 있음)
-3. 완성된 보고서를 "링크 보기 권한 공개"로 전환해 GitHub README/블로그에 링크 첨부
-4. `blog/01~04` Tistory 포스팅 검토 후 게시 (05번으로 `blog/01-github-cli-install-and-use.md`도 원하면 추가 가능, 현재 미커밋 상태로 로컬에만 있음)
+## 4단계 최종 완료 (2026-07-05)
+Google Sheets 업로드 + Looker Studio 대시보드 구성까지 실제로 완료함.
+- 공개 대시보드: https://datastudio.google.com/reporting/6a3719fa-7d0b-4c23-83ea-257fad8f0ad9
+- 구성: 일별 매출 추이(꺾은선), 상품별 매출 Top N(막대), 재구매 고객 LTV Top10(표), 상단 스코어카드(총매출/총주문수/재구매율)
+- 트러블슈팅: ① 막대그래프가 기본 정렬(비내림차순) 상태라 "기타" 합산 막대가 개별 상품보다 커 보이는 문제 → revenue 내림차순 정렬로 해결. ② 재구매율 계산 필드에서 `CASE WHEN is_repeat_customer THEN ...`가 "Condition must be boolean" 에러 → CSV 임포트 과정에서 불리언이 텍스트("True"/"False")로 들어간 게 원인. `CASE WHEN LOWER(is_repeat_customer) = "true" THEN ...`로 명시적 텍스트 비교하여 해결.
+- 루트 `README.md` 신규 작성(대시보드 링크/아키텍처/기술스택/실행법 요약) — 기존엔 PROJECT_PLAN.md만 있어서 GitHub 방문자에게 보여줄 진입 문서가 없었음.
 
-새 PC/환경에서 이어서 할 때: 이 리포를 클론 → `docker compose up -d` → Docker Desktop 가상화 이슈 있으면 Windows 기능(Hyper-V/Virtual Machine Platform/WSL) 활성화 필요 → DAG가 자동(5분 간격) 또는 `airflow dags trigger shop_pipeline`으로 수동 실행되면 `bi/exports/*.csv` 생성됨 → 위 1~3번 진행.
+## 남은 작업
+로드맵 1~5단계 전부 완료. 남은 건 순수 문서/게시 작업뿐:
+1. `blog/01~04` Tistory 포스팅 검토 후 게시 (05번으로 `blog/01-github-cli-install-and-use.md`도 원하면 추가 가능, 현재 미커밋 상태로 로컬에만 있음)
+2. (선택) 자소서/이력서에 이 프로젝트를 STAR 형식으로 요약해서 반영 — 단순 기술 나열보다 트러블슈팅 사례(CDC 순서 뒤바뀜, 배치 경계 지연, CI dbt 권한 버그) 중심으로 서술하는 게 설득력 있음
+
+새 PC/환경에서 이어서 할 때: 이 리포를 클론 → `docker compose up -d` → Docker Desktop 가상화 이슈 있으면 Windows 기능(Hyper-V/Virtual Machine Platform/WSL) 활성화 필요 → DAG가 자동(5분 간격) 또는 `airflow dags trigger shop_pipeline`으로 수동 실행되면 `bi/exports/*.csv` 생성됨.
