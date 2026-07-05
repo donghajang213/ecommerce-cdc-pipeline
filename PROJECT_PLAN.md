@@ -293,3 +293,15 @@ dbt test 21건 전부 통과로 성공하는 것까지 확인함.
 - 2026-07-02: 4단계(BI 대시보드) 완료 — dbt 마트를 CSV로 내보내는 `export_marts_to_csv` Airflow 태스크 추가, `bi/exports/*.csv` 생성까지 실제 검증함. Looker Studio는 클라우드 전용이라 Google Sheets 업로드 + Looker Studio 연결은 `bi/README.md` 가이드로 남기고 사용자가 수동 진행하는 것으로 범위를 나눔. 로드맵상 남은 항목은 5단계(Docker/K8s 배포 + CI/CD, 여유되면).
 - 2026-07-02: 1~4단계 Tistory 블로그 포스팅 초안 작성 완료 (`blog/01-cdc-kafka-datalake.md` ~ `blog/04-bi-dashboard.md`). 각 단계의 설계 결정/트러블슈팅/검증 결과를 스토리 형태로 정리함. 3편에는 실제로 발견한 CDC 정합성 버그 2건(동시각 이벤트 순서 뒤바뀜, 배치 경계 고아 레코드)을 핵심 소재로 다룸. 사용자가 내용 검토 후 Tistory에 직접 게시하면 됨. 다음 단계는 5단계(Docker/K8s 배포 + CI/CD) 진행 여부 결정.
 - 2026-07-03: 5단계(CI/CD) 완료 — K8s 대신 CI/CD 위주로 진행 결정. `.github/workflows/ci.yml`에 lint job(ruff)과 smoke-test job(docker compose로 전체 스택 기동 → CDC 이벤트 도착 대기 → shop_pipeline DAG 트리거 → 완료까지 폴링 → 실패 시 태스크 로그 덤프) 추가. 로컬에서 워크플로 내 모든 명령을 실제 컨테이너로 검증함. 검증 중 latency SLA 위반이 한 번 발생했는데, 원인은 세션 재개 시 남아있던 17시간 전 CDC 이벤트 백로그였고 CI 스크립트 자체 문제가 아님을 확인(재트리거로 정상화). 로드맵 5단계까지 전부 완료 — 포트폴리오 코드/문서 작업은 마무리 단계.
+- 2026-07-05: **브랜치 정리**: 이 리포를 다른 세션/환경에서 계속 작업하다 보니 로컬 `master`(1~2단계 상태)와 GitHub의 `main`(1~5단계 전체 완료 상태)이 분기되어 있었음을 발견. `master`가 `main`의 조상(ancestor)이라 충돌 없이 `git branch -m master main` + fast-forward로 정리 완료. **앞으로 이 리포는 항상 `main` 브랜치 기준으로 작업할 것.**
+- 2026-07-05: GCP 관련 상황 정리 — "GCP 연결"이 필요하다고 생각했으나, 실제로 남은 작업은 `bi/README.md`의 Google Sheets 업로드 + Looker Studio 연결(둘 다 개인 Google 계정으로 브라우저에서 수동 진행하는 일회성 작업)뿐이고 GCS/BigQuery 같은 실제 GCP 인프라는 필요하지 않음. 다만 진행 중 기존 GCP 프로젝트 `dataengineer-demo-a51c4`에 빌링 계정(`01A59C-739527-82790C`)을 사용자 승인 하에 연결함 — 이 프로젝트는 BigQuery/Storage API가 이미 활성화되어 있어 향후 "DuckDB 대신 실제 BigQuery/GCS로 업그레이드"하고 싶을 때 바로 쓸 수 있음(현재 로드맵상 필수는 아님, 예산 알림은 아직 미설정).
+- 2026-07-05: 전체 스택을 최신 `main` 코드로 재빌드/재기동해서 `ingest → dbt_build → dq_gate → export` 전체 성공 검증. 재기동 과정에서 두 가지 이슈 발견/해결: ① DuckDB 웨어하우스 파일이 예전 스키마(`__seq` 컬럼 없음)로 남아있어 최신 ingest 코드와 안 맞아 실패 — 로컬 전용 파일이라 볼륨을 지우고 재생성하는 것으로 해결(리뷰어가 처음 클론할 때는 발생하지 않는 이슈). ② `dq_gate`가 `order_items`가 아직 적재 안 된 `orders`를 참조하는 7건을 잡아내며 실패 — 재트리거하니 바로 정상화됨. 두 테이블이 서로 다른 Kafka 토픽에서 독립적인 타이머로 flush되는 lake-writer 구조상 생기는, 이미 3단계에서도 관찰했던 "배치 경계 지연"과 같은 종류의 일시적 현상이며 파이프라인 버그가 아님. `bi/exports/*.csv` 정상 생성까지 확인.
+
+## 남은 작업 (다음에 이어서 할 것)
+로드맵 1~5단계 코드/자동화는 전부 완료. 아래는 **브라우저에서 개인 Google 계정으로 수동 진행**해야 해서 자동화 대상이 아닌 항목:
+1. `bi/README.md` 가이드대로 `bi/exports/*.csv` 3개를 Google Sheets에 업로드
+2. Looker Studio에서 그 Sheets를 데이터 소스로 연결해 대시보드 구성 (README에 추천 차트 구성 있음)
+3. 완성된 보고서를 "링크 보기 권한 공개"로 전환해 GitHub README/블로그에 링크 첨부
+4. `blog/01~04` Tistory 포스팅 검토 후 게시 (05번으로 `blog/01-github-cli-install-and-use.md`도 원하면 추가 가능, 현재 미커밋 상태로 로컬에만 있음)
+
+새 PC/환경에서 이어서 할 때: 이 리포를 클론 → `docker compose up -d` → Docker Desktop 가상화 이슈 있으면 Windows 기능(Hyper-V/Virtual Machine Platform/WSL) 활성화 필요 → DAG가 자동(5분 간격) 또는 `airflow dags trigger shop_pipeline`으로 수동 실행되면 `bi/exports/*.csv` 생성됨 → 위 1~3번 진행.
